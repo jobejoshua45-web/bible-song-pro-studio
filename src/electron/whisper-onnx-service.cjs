@@ -294,10 +294,13 @@ function createOnnxWhisperService({ app }) {
         // only copy when a plain array arrives (REST callers, older payloads).
         audioInput = arr instanceof Float32Array ? arr : Float32Array.from(arr);
       } else if (payload.base64) {
+        /* Read through a DataView: a Buffer is a window into a shared pool, so
+           an odd byteOffset made `new Int16Array(buffer.buffer, ...)` throw,
+           and an odd byte count made the length fractional. */
         const buffer = Buffer.from(payload.base64, 'base64');
-        const int16 = new Int16Array(buffer.buffer, buffer.byteOffset, buffer.byteLength / 2);
-        const float32 = new Float32Array(int16.length);
-        for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768.0;
+        const samples = Math.floor(buffer.byteLength / 2);
+        const float32 = new Float32Array(samples);
+        for (let i = 0; i < samples; i++) float32[i] = buffer.readInt16LE(i * 2) / 32768.0;
         audioInput = float32;
       } else if (payload.text) {
         // Passthrough mode for non-audio testing

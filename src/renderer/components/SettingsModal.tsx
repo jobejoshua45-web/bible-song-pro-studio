@@ -223,9 +223,24 @@ function IconCamera() {
   );
 }
 
+/** One engine's slice of `ai:status`, for the engines beyond the ONNX one above. */
+interface EngineSlice {
+  available?: boolean;
+  ready?: boolean;
+  warmupState?: string;
+  downloadProgress?: number;
+  lastError?: string;
+  modelInstalled?: boolean;
+  modelLabel?: string;
+  approxSize?: string;
+  cacheDir?: string;
+  voiceStudioPath?: string;
+  installUrl?: string;
+  transcribeWired?: boolean;
+}
+
 export function SettingsModal() {
-  const { t, locale } = useI18n();
-  const setStoreUiLocale = useAppStore((s) => s.setUiLocale);
+  const { t, locale, setLocale } = useI18n();
   const typingFont = useAppStore((s) => s.typingFont);
   const setTypingFont = useAppStore((s) => s.setTypingFont);
   const [fontOptions, setFontOptions] = useState<FontOptionItem[]>([]);
@@ -263,7 +278,6 @@ export function SettingsModal() {
 
   const [activeCategory, setActiveCategory] = useState<SettingsCategory>(activeCategoryValue || 'scripture');
   const [settings, setSettings] = useState<AppSettings | null>(null);
-  const [deepgramKeyDraft, setDeepgramKeyDraft] = useState('');
   const [displays, setDisplays] = useState<DisplayTarget[]>([]);
   const [selectedDisplayId, setSelectedDisplayId] = useState<string>('auto');
   const [selectedStageDisplayId, setSelectedStageDisplayId] = useState<string>('auto');
@@ -273,6 +287,12 @@ export function SettingsModal() {
   const [micNamesHidden, setMicNamesHidden] = useState(false);
   const [updateChecking, setUpdateChecking] = useState(false);
   const [updateStatusText, setUpdateStatusText] = useState<string | null>(null);
+  const [deepgramKeyDraft, setDeepgramKeyDraft] = useState('');
+  const [deepgramTesting, setDeepgramTesting] = useState(false);
+  const [deepgramTestResult, setDeepgramTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [wordStudy, setWordStudy] = useState(false);
+  const [inputGain, setInputGain] = useState(0);
+  const [voiceCommands, setVoiceCommands] = useState(false);
 
   const handleManualUpdateCheck = async () => {
     if (!window.BSP?.updates?.check) return;
@@ -299,14 +319,33 @@ export function SettingsModal() {
      the transcription service's status, which is the half this row is about —
      the MLX path has no model choice to offer. */
   const [aiStatus, setAiStatus] = useState<LocalModelStatus | null>(null);
+  /** Parakeet and Voice Studio report their own weights, separately from ONNX. */
+  const [otherEngines, setOtherEngines] = useState<Record<string, EngineSlice>>({});
   const [localBusy, setLocalBusy] = useState(false);
+  const [parakeetBusy, setParakeetBusy] = useState(false);
   const localModels = aiStatus?.models || [];
   const localModel = localModels.find((m) => m.key === aiStatus?.modelKey) || null;
 
   const refreshAiStatus = useCallback(async () => {
     const status = await window.BSP?.ai?.status?.().catch(() => null);
     if (status?.engines?.onnx) setAiStatus(status.engines.onnx as LocalModelStatus);
+    if (status?.engines) setOtherEngines(status.engines as Record<string, EngineSlice>);
   }, []);
+
+  /* Parakeet's weights are its own download (~409 MB), so they are fetched only
+     when the operator asks for that engine — polling while it runs is how the
+     percentage gets out, exactly as the ONNX row does it. */
+  const downloadParakeet = useCallback(async () => {
+    setParakeetBusy(true);
+    const poll = window.setInterval(refreshAiStatus, 700);
+    try {
+      await window.BSP?.ai?.warmup?.({ engine: 'parakeet' }).catch(() => null);
+    } finally {
+      window.clearInterval(poll);
+      await refreshAiStatus();
+      setParakeetBusy(false);
+    }
+  }, [refreshAiStatus]);
 
   useEffect(() => { refreshAiStatus(); }, [refreshAiStatus]);
 
@@ -316,7 +355,7 @@ export function SettingsModal() {
     await refreshAiStatus();
   }, [refreshAiStatus]);
 
-  const handleSelectSttEngine = async (nextEngine: 'deepgram' | 'local') => {
+  const handleSelectSttEngine = async (nextEngine: 'deepgram' | 'local' | 'parakeet' | 'voice-studio' | 'mlx') => {
     await saveSettings({ sttEngine: nextEngine });
     await window.BSP?.ai?.setEngine?.(nextEngine).catch(() => {});
     setLive({ provider: nextEngine });
@@ -350,10 +389,6 @@ export function SettingsModal() {
   const [isBlocking, setIsBlocking] = useState(false);
   const [feedbackSending, setFeedbackSending] = useState(false);
   const [feedbackStatus, setFeedbackStatus] = useState<{ ok: boolean; msg: string; issueUrl?: string } | null>(null);
-  const [wordStudy, setWordStudy] = useState(true);
-  const [inputGain, setInputGain] = useState(0);
-  const [voiceCommands, setVoiceCommands] = useState(true);
-
   // NDI Multi-Feed Streaming State
   const [ndiStatus, setNdiStatus] = useState<NdiStatus | null>(null);
   const [ndiFeeds, setNdiFeeds] = useState<NdiOutputFeed[]>([
@@ -564,6 +599,27 @@ export function SettingsModal() {
       window.dispatchEvent(new CustomEvent('bsp:settings-updated', { detail: res.settings }));
     }
   }
+
+  const testDeepgramKey = async () => {
+    setDeepgramTesting(true);
+    setDeepgramTestResult(null);
+    try {
+      const res = await window.BSP?.settings?.get().catch(() => null);
+      const key = res?.settings?.deepgramApiKeySet ? 'set' : '';
+      if (!key) {
+        setDeepgramTestResult({ ok: false, msg: t('settings.audio.noKeySet') });
+        return;
+      }
+      /* Test the key by configuring Deepgram with it — a bad key fails at
+         handshake, so we get a fast, honest answer. */
+      await window.BSP?.ai?.warmup?.({ engine: 'deepgram' }).catch(() => {});
+      setDeepgramTestResult({ ok: true, msg: t('settings.audio.keyOk') });
+    } catch {
+      setDeepgramTestResult({ ok: false, msg: t('settings.audio.keyBad') });
+    } finally {
+      setDeepgramTesting(false);
+    }
+  };
 
   function patchFullScreen(patch: Partial<NonNullable<typeof activeTheme>['fullScreen']>) {
     if (!activeTheme) return;
@@ -936,6 +992,25 @@ export function SettingsModal() {
                     >
                       {t('settings.audio.onDevice')}
                     </button>
+                    <button
+                      style={{
+                        ...modalStyles.pillBtn,
+                        background: settings?.sttEngine === 'parakeet' ? '#FF5500' : 'transparent',
+                        color: settings?.sttEngine === 'parakeet' ? '#ffffff' : 'var(--text-secondary)',
+                      }}
+                      onClick={() => handleSelectSttEngine('parakeet')}
+                    >
+                      Parakeet (local)
+                    </button>                    <button
+                      style={{
+                        ...modalStyles.pillBtn,
+                        background: settings?.sttEngine === 'mlx' ? '#FF5500' : 'transparent',
+                        color: settings?.sttEngine === 'mlx' ? '#ffffff' : 'var(--text-secondary)',
+                      }}
+                      onClick={() => handleSelectSttEngine('mlx')}
+                      disabled={platform !== 'darwin'}                    >
+                      MLX Whisper {platform !== 'darwin' ? ' (macOS only)' : ''}
+                    </button>
                   </div>
                 </div>
 
@@ -985,20 +1060,97 @@ export function SettingsModal() {
                             })}
                       </button>
                       <span
-                        style={{
-                          fontSize: 11,
-                          color: aiStatus?.warmupState === 'error' ? 'var(--tally-fault)' : 'var(--text-dim)',
-                        }}
+                          style={{
+                            fontSize: 11,
+                            color: aiStatus?.warmupState === 'error' ? 'var(--tally-fault)' : 'var(--text-dim)',
+                          }}
+                        >
+                          {aiStatus?.warmupState === 'error'
+                            ? aiStatus?.lastError || t('settings.audio.modelLoadError')
+                            : aiStatus?.ready
+                            ? t('settings.audio.modelReady')
+                            : t('settings.audio.downloadSizeHint', { size: localModel?.approxSize || '~145 MB' })}
+                        </span>
+                      </div>
+                      </div>
+                      )}
+
+                      {/* The other engines carry their own weights, so each row
+                          installs only the engine the operator picked. */}
+                      {settings?.sttEngine === 'parakeet' && (
+                      <div style={{ ...modalStyles.formRow, flexDirection: 'column', alignItems: 'stretch', gap: 10 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                      <div>
+                      <div style={modalStyles.rowTitle}>{otherEngines.parakeet?.modelLabel || 'Parakeet TDT 0.6B v3'}</div>
+                      <div style={modalStyles.rowSub}>
+                      {`NVIDIA Parakeet · ONNX int8 · 25 European languages${otherEngines.parakeet?.approxSize ? ` (~${otherEngines.parakeet.approxSize})` : ''}`}
+                      </div>
+                      </div>
+                      <button
+                      style={modalStyles.actionBtn}
+                      onClick={downloadParakeet}
+                      disabled={parakeetBusy || otherEngines.parakeet?.ready}
                       >
-                        {aiStatus?.warmupState === 'error'
-                          ? aiStatus?.lastError || t('settings.audio.modelLoadError')
-                          : aiStatus?.ready
-                          ? t('settings.audio.modelReady')
-                          : t('settings.audio.downloadSizeHint', { size: localModel?.approxSize || '~145 MB' })}
+                      {parakeetBusy
+                      ? otherEngines.parakeet?.warmupState === 'downloading'
+                      ? `Downloading ${otherEngines.parakeet?.downloadProgress ?? 0}%`
+                      : 'Preparing…'
+                      : otherEngines.parakeet?.ready
+                      ? 'Model ready'
+                      : otherEngines.parakeet?.modelInstalled
+                      ? 'Load model'
+                      : 'Download model'}
+                      </button>
+                      </div>
+                      <span
+                      style={{
+                        fontSize: 11,
+                        color: otherEngines.parakeet?.warmupState === 'error' ? 'var(--tally-fault)' : 'var(--text-dim)',
+                      }}
+                      >
+                      {otherEngines.parakeet?.warmupState === 'error'
+                        ? otherEngines.parakeet?.lastError || 'The Parakeet model could not be loaded.'
+                        : otherEngines.parakeet?.ready
+                        ? 'Loaded and ready to transcribe.'
+                        : `Saved under ${otherEngines.parakeet?.cacheDir || '~/.cache/parakeet'}. The first load takes a few seconds.`}
                       </span>
-                    </div>
-                  </div>
-                )}
+                      </div>
+                      )}
+
+                      {settings?.sttEngine === 'voice-studio' && (
+                      <div style={{ ...modalStyles.formRow, flexDirection: 'column', alignItems: 'stretch', gap: 10 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                      <div>
+                      <div style={modalStyles.rowTitle}>Voice Studio</div>
+                      <div style={modalStyles.rowSub}>
+                      {otherEngines['voice-studio']?.available
+                        ? otherEngines['voice-studio']?.transcribeWired === false
+                        ? 'Detected, but this build cannot drive its engines yet — compare Parakeet or the on-device model instead.'
+                        : 'Installed. WhisperX, Faster Whisper, Parakeet, Moonshine, FunASR and sherpa-onnx run through it.'
+                        : `Not installed. Voice Studio is a separate app: install it at ${otherEngines['voice-studio']?.voiceStudioPath || '~/VoiceStudio'}, then reopen Bible Song Pro.`}
+                      </div>
+                      </div>
+                      <button
+                      style={modalStyles.actionBtn}
+                      onClick={() => { void window.BSP?.openExternal?.(otherEngines['voice-studio']?.installUrl || 'https://github.com/gskfilmmaker/voicestudio'); }}
+                      >
+                      {otherEngines['voice-studio']?.available ? 'Project page' : 'Get Voice Studio'}
+                      </button>
+                      </div>
+                      </div>
+                      )}
+
+                      {/* Semantic Verse Detection (paraphrased scripture matching) */}
+                      <div style={modalStyles.formRow}>
+                      <div>
+                      <div style={modalStyles.rowTitle}>Semantic Verse Detection</div>
+                      <div style={modalStyles.rowSub}>Match paraphrased or rephrased scripture using AI vector search (like Pewbeam/Loghema)</div>
+                      </div>
+                      <AppleToggle
+                      checked={settings?.semanticVerseDetection !== false}
+                      onChange={(checked) => saveSettings({ semanticVerseDetection: checked })}
+                      />
+                      </div>
 
                 {/* 2. Deepgram API Key */}
                 <div style={{ ...modalStyles.formRow, flexDirection: 'column', alignItems: 'stretch' }}>
@@ -1017,10 +1169,16 @@ export function SettingsModal() {
                     <input
                       type="password"
                       placeholder={settings?.deepgramApiKeySet ? t('settings.audio.deepgramPlaceholderSet') : t('settings.audio.deepgramPlaceholder')}
-                      value={deepgramKeyDraft}
                       onChange={(e) => setDeepgramKeyDraft(e.target.value)}
                       style={{ ...modalStyles.textInput, flex: 1 }}
                     />
+                    <button
+                      style={modalStyles.actionBtn}
+                      onClick={testDeepgramKey}
+                      disabled={deepgramTesting}
+                    >
+                      {deepgramTesting ? t('settings.audio.testing') : t('settings.audio.testKey')}
+                    </button>
                     <button
                       style={{ ...modalStyles.actionBtn, height: 36, background: '#FF5500', color: '#fff', border: 'none', whiteSpace: 'nowrap' }}
                       onClick={() => {
@@ -1610,7 +1768,7 @@ export function SettingsModal() {
                   <select
                     style={modalStyles.selectInput}
                     value={locale}
-                    onChange={(e) => setStoreUiLocale(e.target.value as UiLocale)}
+                    onChange={(e) => setLocale(e.target.value as UiLocale)}
                   >
                     {UI_LOCALES.map((entry) => (
                       <option key={entry.id} value={entry.id}>

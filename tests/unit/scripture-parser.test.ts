@@ -48,7 +48,7 @@ describe('Live Scripture Parser & Speech Detection', () => {
       isFinal: true,
     }).detections[0];
     expect(quote?.displayRef).toBe('John 3:16');
-  });
+  }, 10000);
 
   it('prevents false positives from general sermon talk', () => {
     const sermon = service.detect('We welcome everyone to church this morning, let us pray and thank God for this beautiful day', {

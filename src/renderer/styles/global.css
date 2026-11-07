@@ -268,7 +268,7 @@ select option:hover, select option:focus, select option:checked {
   width: 1px;
   transform: translateX(-50%);
   background: transparent;
-  transition: background 0.15s ease;
+  transition: background var(--d-state) ease, color var(--d-state) ease;
 }
 
 .panel-splitter:hover::after,
@@ -281,7 +281,7 @@ select option:hover, select option:focus, select option:checked {
    controls. Keyboard users get them via :focus-within. */
 .row-action {
   opacity: 0;
-  transition: opacity 0.12s ease;
+  transition: opacity var(--d-state) ease;
 }
 
 .row-hover:hover .row-action,
@@ -357,7 +357,7 @@ select option:hover, select option:focus, select option:checked {
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 4px;
   overflow: hidden;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition: background var(--d-state) ease, color var(--d-state) ease, border-color var(--d-state) ease, box-shadow var(--d-state) ease;
 }
 
 /* Active / Focused Group gets the clean blue border as in Adobe Premiere */
@@ -415,7 +415,7 @@ select option:hover, select option:focus, select option:checked {
   white-space: nowrap;
   text-transform: none;
   letter-spacing: 0;
-  transition: color 0.12s ease;
+  transition: color var(--d-state) ease;
 }
 
 .dock-tab--active .dock-tab__title,

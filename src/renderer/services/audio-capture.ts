@@ -545,17 +545,20 @@ export async function startAudioCapture(options: AudioCaptureOptions): Promise<A
     if (stopped || !context) return;
     activeDsp = { ...activeDsp, ...newDsp };
 
-    // 1. Send updated noise suppression config directly into audio worklet
+    // 1. Send updated noise suppression config directly into audio worklet.
+    // The merged view, not the patch: a caller changing only the sensitivity
+    // would otherwise switch suppression off and reset the level, because the
+    // untouched fields are simply absent from newDsp.
     node.port.postMessage({
       type: 'SET_DSP',
-      noiseSuppression: Boolean(newDsp.noiseSuppression),
-      suppressionLevel: newDsp.noiseSuppressionLevel || 'aggressive',
-      sensitivity: newDsp.noiseSuppressionSensitivity ?? 1.0,
+      noiseSuppression: Boolean(activeDsp.noiseSuppression),
+      suppressionLevel: activeDsp.noiseSuppressionLevel || 'aggressive',
+      sensitivity: activeDsp.noiseSuppressionSensitivity ?? 1.0,
     });
 
     // 2. Adjust Dynamics Compressor
     if (compressor) {
-      const isAgc = Boolean(newDsp.autoGainControl);
+      const isAgc = Boolean(activeDsp.autoGainControl);
       const threshold = isAgc ? -24 : 0;
       const ratio = isAgc ? 6 : 1;
       const knee = isAgc ? 30 : 0;
@@ -575,20 +578,20 @@ export async function startAudioCapture(options: AudioCaptureOptions): Promise<A
     }
 
     if (newDsp.isHeadphoneMonitoring !== undefined || newDsp.monitorVolume !== undefined) {
-      setMonitor(Boolean(newDsp.isHeadphoneMonitoring), newDsp.monitorVolume);
+      setMonitor(Boolean(activeDsp.isHeadphoneMonitoring), activeDsp.monitorVolume);
     }
 
     // 3. Hardware OS audio driver update (switches cleanly between AUVoiceIO and AUHAL)
     const hardwareChanged =
-      Boolean(newDsp.echoCancellation) !== currentHardwareDsp.echoCancellation ||
-      Boolean(newDsp.noiseSuppression) !== currentHardwareDsp.noiseSuppression ||
-      Boolean(newDsp.autoGainControl) !== currentHardwareDsp.autoGainControl;
+      Boolean(activeDsp.echoCancellation) !== currentHardwareDsp.echoCancellation ||
+      Boolean(activeDsp.noiseSuppression) !== currentHardwareDsp.noiseSuppression ||
+      Boolean(activeDsp.autoGainControl) !== currentHardwareDsp.autoGainControl;
 
     if (hardwareChanged) {
       currentHardwareDsp = {
-        echoCancellation: Boolean(newDsp.echoCancellation),
-        noiseSuppression: Boolean(newDsp.noiseSuppression),
-        autoGainControl: Boolean(newDsp.autoGainControl),
+        echoCancellation: Boolean(activeDsp.echoCancellation),
+        noiseSuppression: Boolean(activeDsp.noiseSuppression),
+        autoGainControl: Boolean(activeDsp.autoGainControl),
       };
       await switchDevice(currentDeviceId);
     }

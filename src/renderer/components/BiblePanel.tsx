@@ -15,7 +15,15 @@ import { resolveEffectiveTheme } from './display/ProgramSurface';
 import { FxAnimationPopover } from './FxAnimationPopover';
 import { BibleGridPicker } from './BibleGridPicker';
 
-const FALLBACK_BOOKS = ['Genesis', 'Exodus', 'Psalms', 'Isaiah', 'Matthew', 'Mark', 'Luke', 'John', 'Acts', 'Romans', 'Revelation'];
+const FALLBACK_BOOKS = [
+  'Genesis','Exodus','Leviticus','Numbers','Deuteronomy','Joshua','Judges','Ruth','1 Samuel','2 Samuel',
+  '1 Kings','2 Kings','1 Chronicles','2 Chronicles','Ezra','Nehemiah','Esther','Job','Psalms','Proverbs',
+  'Ecclesiastes','Song of Solomon','Isaiah','Jeremiah','Lamentations','Ezekiel','Daniel','Hosea','Joel','Amos',
+  'Obadiah','Jonah','Micah','Nahum','Habakkuk','Zephaniah','Haggai','Zechariah','Malachi','Matthew','Mark','Luke',
+  'John','Acts','Romans','1 Corinthians','2 Corinthians','Galatians','Ephesians','Philippians','Colossians',
+  '1 Thessalonians','2 Thessalonians','1 Timothy','2 Timothy','Titus','Philemon','Hebrews','James','1 Peter',
+  '2 Peter','1 John','2 John','3 John','Jude','Revelation'
+];
 
 /** Shown until the Bible service reports what it actually has. Module-level so
     the list keeps one identity across renders. */
@@ -35,6 +43,39 @@ function normalizeSearchText(value: string) {
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function seg_ranges(v: string) {
+  const m = (v || '').match(/^(.*?)[\s\u00A0]+(\d+)[\s\u00A0]*:?[\s\u00A0]*(.*)$/);
+  /* A book name typed on its own has no chapter to segment, so there is no
+     active segment to report; the caret counts as being in the book field. */
+  if (!m) return { book: '', chapter: '', verse: '', bookEnd: 0, chStart: 1, chEnd: 1, vStart: 2 };
+
+  const book = m[1];
+  const chapter = m[2];
+  const verse = m[3] || '';
+  const bookEnd = book.length;
+  const chStart = bookEnd + 1;
+  const chEnd = chStart + chapter.length;
+  const vStart = chEnd + 1;
+  return { book, chapter, verse, bookEnd, chStart, chEnd, vStart };
+}
+
+function getBookMatches(prefix: string, books: BibleBook[]) {
+  if (!prefix) return [];
+  const p = normalizeSearchText(prefix).toLowerCase();
+  return books.filter((b) => {
+    const name = normalizeSearchText(b.name).toLowerCase();
+    const compact = name.replace(/\s+/g, '');
+    return name.startsWith(p) || compact.startsWith(p);
+  }).map((b) => ({ name: b.name }));
+}
+
+function getActiveSegment(val: string, ss: number) {
+  const R = seg_ranges(val);
+  if (ss <= R.bookEnd) return 'book';
+  if (ss <= R.chEnd) return 'chapter';
+  return 'verse';
 }
 
 function normalizeReferenceQuery(value: string) {
@@ -358,7 +399,14 @@ export function BiblePanel() {
   }, [activeTheme?.bibleOptions?.dualLayout]);
   const [selectedBook, setSelectedBook] = useState('Genesis');
   const [chapter, setChapter] = useState(1);
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState('John 3:16');
+  /** Inline completion for the book segment, drawn behind the input. */
+  const [bookHint, setBookHint] = useState<{ at: number; text: string; completion: string } | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const prevQueryRef = useRef('John 3:16');
+  const prevSelRef = useRef({ start: 0, end: 0 });
+  const selLockRef = useRef(0);
+  const searchDebRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [mode, setMode] = useState<'text' | 'buttons'>('buttons');
   const [results, setResults] = useState<BibleSearchResult[]>([]);
   const [chapterVerses, setChapterVerses] = useState<BibleVerse[]>([]);
@@ -493,42 +541,66 @@ export function BiblePanel() {
   }
 
   useEffect(() => {
-    window.BSP?.bible?.getVersions()
-      .then((loaded) => {
-        setVersions(loaded);
-        const first = loaded.find((v) => v.id === selectedVersion) || loaded[0];
-        if (first) setBooks(first.books || []);
-      })
-      .catch(() => {});
+    if (window.BSP?.bible?.getVersions) {
+      window.BSP?.bible?.getVersions()
+        .then((loaded) => {
+          setVersions(loaded || FALLBACK_VERSIONS);
+          const first = (loaded || []).find((v) => v.id === selectedVersion) || (loaded || [])[0] || FALLBACK_VERSIONS[0];
+          if (first) {
+            if (first.books && first.books.length > 0) {
+              setBooks(first.books);
+            } else if (window.BSP?.bible?.getBooks) {
+              window.BSP?.bible?.getBooks(selectedVersion).then(setBooks).catch(() => setBooks(FALLBACK_BOOKS.map(name => ({ name, chapters: 50 }))));
+            } else {
+              setBooks(FALLBACK_BOOKS.map(name => ({ name, chapters: 50 })));
+            }
+          } else {
+            setBooks(FALLBACK_BOOKS.map(name => ({ name, chapters: 50 })));
+          }
+        })
+        .catch(() => {
+          setVersions(FALLBACK_VERSIONS);
+          setBooks(FALLBACK_BOOKS.map(name => ({ name, chapters: 50 })));
+        });
+    } else {
+      // Browser fallback
+      setVersions(FALLBACK_VERSIONS);
+      setBooks(FALLBACK_BOOKS.map(name => ({ name, chapters: 50 })));
+    }
   }, []);
 
   useEffect(() => {
-    window.BSP?.bible?.getBooks(selectedVersion).then((loadedBooks) => {
-      setBooks(loadedBooks);
-      if (loadedBooks && loadedBooks.length > 0) {
-        setSelectedBook((prevBook) => {
-          if (!prevBook) return loadedBooks[0].name;
-
-          const exact = loadedBooks.find((b) => b.name === prevBook);
-          if (exact) return exact.name;
-
-          const prevIndex = books.findIndex((b) => b.name === prevBook);
-          if (prevIndex !== -1 && loadedBooks[prevIndex]) {
-            return loadedBooks[prevIndex].name;
-          }
-
-          const alias = BOOK_ALIASES[prevBook.toLowerCase()] || BOOK_ALIASES[prevBook.toLowerCase().replace(/\s+/g, '')];
-          if (alias) {
-            const aliasIndex = FALLBACK_BOOKS.findIndex((fb) => fb.toLowerCase() === alias.toLowerCase());
-            if (aliasIndex !== -1 && loadedBooks[aliasIndex]) {
-              return loadedBooks[aliasIndex].name;
+    if (window.BSP?.bible?.getBooks) {
+      window.BSP?.bible?.getBooks(selectedVersion).then((loadedBooks) => {
+        setBooks(loadedBooks || []);
+        if (loadedBooks && loadedBooks.length > 0) {
+          setSelectedBook((prevBook) => {
+            if (!prevBook) return loadedBooks[0].name;
+            const exact = loadedBooks.find((b) => b.name === prevBook);
+            if (exact) return exact.name;
+            const prevIndex = books.findIndex((b) => b.name === prevBook);
+            if (prevIndex !== -1 && loadedBooks[prevIndex]) {
+              return loadedBooks[prevIndex].name;
             }
-          }
-
-          return loadedBooks[0]?.name || prevBook;
-        });
+            const alias = BOOK_ALIASES[prevBook.toLowerCase()] || BOOK_ALIASES[prevBook.toLowerCase().replace(/\s+/g, '')];
+            if (alias) {
+              const aliasIndex = FALLBACK_BOOKS.findIndex((fb) => fb.toLowerCase() === alias.toLowerCase());
+              if (aliasIndex !== -1 && loadedBooks[aliasIndex]) {
+                return loadedBooks[aliasIndex].name;
+              }
+            }
+            return loadedBooks[0]?.name || prevBook;
+          });
+        }
+      }).catch(() => {
+        setBooks(books.length ? books : FALLBACK_BOOKS.map(name => ({ name, chapters: 1 })));
+      });
+    } else {
+      // Browser fallback - use fallback books
+      if (books.length === 0) {
+        setBooks(FALLBACK_BOOKS.map(name => ({ name, chapters: 50 })));
       }
-    }).catch(() => {});
+    }
   }, [selectedVersion]);
 
   useEffect(() => {
@@ -622,13 +694,45 @@ export function BiblePanel() {
   }, [bookOptions, selectedBook]);
 
   async function loadChapter() {
-    if (!window.BSP?.bible) return;
     if (!selectedBook || !chapter) {
       setChapterVerses([]);
       return;
     }
-    const verses = await window.BSP.bible.getChapter({ versionId: selectedVersion, book: selectedBook, chapter }).catch(() => []);
-    setChapterVerses(verses);
+    if (window.BSP?.bible?.getChapter) {
+      const verses = await window.BSP.bible.getChapter({ versionId: selectedVersion, book: selectedBook, chapter }).catch(() => []);
+      setChapterVerses(verses);
+      return;
+    }
+    // Fallback for browser mode
+    try {
+      const res = await fetch(`./assets/bibles/${selectedVersion}.json`).catch(() => null);
+      if (!res || !res.ok) {
+        setChapterVerses([]);
+        return;
+      }
+      const data = await res.json();
+      const bookData = data[selectedBook];
+      if (!bookData) {
+        setChapterVerses([]);
+        return;
+      }
+      const chapterData = bookData[String(chapter)];
+      if (!chapterData) {
+        setChapterVerses([]);
+        return;
+      }
+      const verses = Object.entries(chapterData).map(([vnum, text]) => ({
+        book: selectedBook,
+        chapter,
+        verse: Number(vnum),
+        text: String(text),
+        reference: `${selectedBook} ${chapter}:${vnum}`,
+        version: selectedVersion,
+      }));
+      setChapterVerses(verses);
+    } catch (e) {
+      setChapterVerses([]);
+    }
   }
 
   async function runSearch(nextQuery = query, opts: { normalizeInput?: boolean } = {}) {
@@ -1163,6 +1267,47 @@ export function BiblePanel() {
     setPinned((items) => [verse, ...items.filter((item) => item.reference !== verse.reference)].slice(0, 8));
   }
 
+  /**
+   * The book a typed prefix resolves to, when exactly one book matches it and
+   * the canonical name runs longer than what was typed. Offered as a ghost and
+   * taken with Tab, so the box never holds text the operator did not type.
+   */
+  function resolveBookHint(value: string) {
+    const R = seg_ranges(value);
+    /* Before a chapter exists the whole box is the book being spelled. */
+    const bookText = R.book || (/^[\p{L}1-3 ]*$/u.test(value) ? value : '');
+    const typed = bookText.replace(/\s+$/, '').trim();
+    if (!typed) return null;
+    const at = bookText.replace(/\s+$/, '').length;
+    const matches = getBookMatches(typed, bookOptions);
+    if (matches.length !== 1) return null;
+    const completion = matches[0].name;
+    if (!completion.toLowerCase().startsWith(typed.toLowerCase())) return null;
+    const text = completion.slice(typed.length);
+    return text ? { at, text, completion } : null;
+  }
+
+  /**
+   * Writes the completed book into the box and leaves the caret at the end of
+   * it, ready for the chapter. Returns the text it wrote so a caller can carry
+   * on with the new reference immediately.
+   */
+  function acceptBookHint(hint: { at: number; text: string; completion: string }) {
+    /* The canonical spelling replaces what was typed, so a lowercase "gen"
+       lands as "Genesis" rather than "genesis". */
+    const book = hint.completion;
+    const next = book + query.slice(hint.at);
+    setQuery(next);
+    prevQueryRef.current = next;
+    setBookHint(null);
+    window.requestAnimationFrame(() => {
+      if (searchInputRef.current) {
+        searchInputRef.current.selectionStart = searchInputRef.current.selectionEnd = book.length;
+      }
+    });
+    return next;
+  }
+
   function handleSearchKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
     const isSpaceKey = event.key === ' ' || event.key === 'Space' || event.code === 'Space';
     if (isSpaceKey) {
@@ -1174,22 +1319,53 @@ export function BiblePanel() {
         textBeforeCursor.match(/^([\p{L}1-3 ]+?)(\d+)$/u);
       if (match && (!textAfterCursor || /^\s*$/.test(textAfterCursor)) && bookCandidateMatches(match[1], bookOptions)) {
         event.preventDefault();
-        let displayBook = String(match[1] || '').trim().replace(/\s+/g, ' ');
+        /* Take the offered completion when there is one, so "Gen 3" becomes
+           "Genesis 3:" instead of keeping the half-spelled book. */
+        let displayBook = bookHint
+          ? bookHint.completion
+          : String(match[1] || '').trim().replace(/\s+/g, ' ');
         displayBook = displayBook.replace(/^([1-3])(?=\p{L})/u, '$1 ');
         const next = `${displayBook} ${match[2]}:${textAfterCursor}`;
         const nextCursor = `${displayBook} ${match[2]}:`.length;
+        setBookHint(null);
         setQuery(next);
         window.requestAnimationFrame(() => {
           input.selectionStart = input.selectionEnd = nextCursor;
         });
         return;
       }
+
+      /* A complete reference wraps back to the book on space, the way
+         EasyWorship restarts a reference. The keystroke must never land in the
+         box here: with the verse segment active it replaced the highlighted
+         verse, so "John 3:16" came out as "John 3: " and the 16 was gone. */
+      const range = seg_ranges(query);
+      if (getActiveSegment(query, cursorPos) === 'verse' && range.verse.trim()) {
+        event.preventDefault();
+        window.requestAnimationFrame(() => {
+          if (searchInputRef.current) {
+            searchInputRef.current.selectionStart = 0;
+            searchInputRef.current.selectionEnd = range.bookEnd;
+          }
+        });
+      }
+    }
+
+    /* Tab takes the inline completion. Nothing was written while typing, so
+       this is the keystroke that finally puts it in the box. */
+    if (event.key === 'Tab' && bookHint) {
+      event.preventDefault();
+      acceptBookHint(bookHint);
+      return;
     }
 
     if (event.key === 'Enter') {
       event.preventDefault();
+      /* Enter takes a pending completion first, so "jo 3:16" sends the verse
+         being offered instead of searching for the half-typed book. */
+      const entered = bookHint ? acceptBookHint(bookHint) : query;
       void (async () => {
-        const parsedRef = parseReferenceQuery(query, bookOptions);
+        const parsedRef = parseReferenceQuery(entered, bookOptions);
         if (parsedRef && parsedRef.verse && parsedRef.endVerse) {
           let verses = chapterVerses;
           if (parsedRef.bookName !== selectedBook || parsedRef.chapter !== chapter || !verses.length) {
@@ -1221,7 +1397,7 @@ export function BiblePanel() {
           }
         }
         if (!verseToSend) {
-          const found = await runSearch();
+          const found = await runSearch(entered);
           verseToSend = found[0] || results[0];
         }
         if (verseToSend) void sendVerse(verseToSend, { direct: true });
@@ -1619,14 +1795,182 @@ export function BiblePanel() {
         )}
 
         {/* 2. Unified Search Input (reference or keyword) */}
+        <div style={styles.searchField}>
         <input
+          ref={searchInputRef}
           style={styles.searchInput}
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onBlur={() => setQuery((current) => normalizeReferenceQuery(current))}
-          onKeyDown={handleSearchKeyDown}
+          onChange={(e) => {
+            const raw = e.target.value;
+
+            /* The completion is offered, never written: rewriting the value and
+               selecting the remainder meant the next keystroke destroyed the
+               completion it had just shown, so typing "Genesis" came out as
+               "Gens". The box only ever holds what was typed; Tab or space
+               takes the completion. */
+            setBookHint(resolveBookHint(raw));
+
+            // Prevent clearing the box - keep last valid scripture
+            if (raw.trim() === '') {
+              const lastValid = prevQueryRef.current;
+              if (lastValid && lastValid.trim()) {
+                setQuery(lastValid);
+                return;
+              }
+            }
+
+            setQuery(raw);
+            prevQueryRef.current = raw;
+          }}
+          onBlur={() => {
+            setBookHint(null);
+            setQuery((current) => normalizeReferenceQuery(current));
+          }}
+          onKeyDown={(e) => {
+            handleSearchKeyDown(e);
+            /* Space and Enter are answered above. The navigation below reads
+               `query`, which is still the pre-edit value while this event is
+               being handled, so running it again would act on the wrong text. */
+            if (e.defaultPrevented) return;
+            // Enhanced segment navigation like in the example
+            if (e.key === ' ' || e.key === 'ArrowRight') {
+              const input = searchInputRef.current;
+              if (!input) return;
+              const val = query;
+              const ss = input.selectionStart ?? val.length;
+              const se = input.selectionEnd ?? ss;
+              const R = seg_ranges(val);
+              const active = getActiveSegment(val, ss);
+              if ((e.key === ' ' || e.key === 'ArrowRight') && active === 'book') {
+                const matches = getBookMatches(R.book, bookOptions);
+                if (matches.length > 0) {
+                  const ex = matches[0];
+                  const nv = `${ex.name} ${R.chapter || '1'}:${R.verse || '1'}`;
+                  const NR = seg_ranges(nv);
+                  e.preventDefault();
+                  setBookHint(null);
+                  setQuery(nv);
+                  prevQueryRef.current = nv;
+                  window.requestAnimationFrame(() => {
+                    if (searchInputRef.current) {
+                      searchInputRef.current.selectionStart = NR.chStart;
+                      searchInputRef.current.selectionEnd = NR.chEnd;
+                    }
+                  });
+                  return;
+                }
+              } else if ((e.key === ' ' || e.key === 'ArrowRight') && active === 'chapter') {
+                const nv = `${R.book} ${R.chapter || '1'}:${R.verse || '1'}`;
+                const NR = seg_ranges(nv);
+                e.preventDefault();
+                setQuery(nv);
+                prevQueryRef.current = nv;
+                window.requestAnimationFrame(() => {
+                  if (searchInputRef.current) {
+                    searchInputRef.current.selectionStart = NR.vStart;
+                    searchInputRef.current.selectionEnd = NR.vStart + NR.verse.length;
+                  }
+                });
+                return;
+              } else if (e.key === 'ArrowRight' && active === 'verse') {
+                const nv = `${R.book} ${R.chapter || '1'}:${R.verse || '1'}`;
+                const NR = seg_ranges(nv);
+                e.preventDefault();
+                setQuery(nv);
+                prevQueryRef.current = nv;
+                window.requestAnimationFrame(() => {
+                  if (searchInputRef.current) {
+                    searchInputRef.current.selectionStart = 0;
+                    searchInputRef.current.selectionEnd = NR.bookEnd;
+                  }
+                });
+                return;
+              }
+            }
+            // Wrap around: pressing space at end wraps to Genesis
+            if (e.key === ' ') {
+              const input = searchInputRef.current;
+              if (!input) return;
+              const val = query;
+              const ss = input.selectionStart ?? val.length;
+              const se = input.selectionEnd ?? ss;
+              if (ss >= val.length - 1 && se >= val.length - 1) {
+                e.preventDefault();
+                // Wrap around: highlight the book name of the current scripture
+                const R2 = seg_ranges(val);
+                window.requestAnimationFrame(() => {
+                  if (searchInputRef.current) {
+                    searchInputRef.current.selectionStart = 0;
+                    searchInputRef.current.selectionEnd = R2.bookEnd;
+                  }
+                });
+                return;
+              }
+            }
+            if (e.key === 'ArrowLeft') {
+              const input = searchInputRef.current;
+              if (!input) return;
+              const val = query;
+              const ss = input.selectionStart ?? val.length;
+              const R = seg_ranges(val);
+              const active = getActiveSegment(val, ss);
+              if (active === 'book') {
+                e.preventDefault();
+                const NR = seg_ranges(val);
+                window.requestAnimationFrame(() => {
+                  if (searchInputRef.current) {
+                    searchInputRef.current.selectionStart = NR.vStart;
+                    searchInputRef.current.selectionEnd = NR.vStart + NR.verse.length;
+                  }
+                });
+                return;
+              } else if (active === 'chapter') {
+                e.preventDefault();
+                const NR = seg_ranges(val);
+                window.requestAnimationFrame(() => {
+                  if (searchInputRef.current) {
+                    searchInputRef.current.selectionStart = 0;
+                    searchInputRef.current.selectionEnd = NR.bookEnd;
+                  }
+                });
+                return;
+              } else if (active === 'verse') {
+                e.preventDefault();
+                const NR = seg_ranges(val);
+                window.requestAnimationFrame(() => {
+                  if (searchInputRef.current) {
+                    searchInputRef.current.selectionStart = NR.chStart;
+                    searchInputRef.current.selectionEnd = NR.chEnd;
+                  }
+                });
+                return;
+              }
+            }
+          }}
+          onFocus={(e) => {
+            const val = query;
+            const R = seg_ranges(val);
+            if (val.trim()) {
+              window.requestAnimationFrame(() => {
+                if (searchInputRef.current) {
+                  searchInputRef.current.selectionStart = 0;
+                  searchInputRef.current.selectionEnd = R.bookEnd;
+                }
+              });
+            }
+          }}
           placeholder={t('bible.searchPlaceholder')}
         />
+        {/* Drawn behind the input: the typed part is hidden so only the
+            completion shows, and the tail keeps the offsets honest. */}
+        {bookHint && (
+          <div aria-hidden="true" style={styles.searchGhost}>
+            <span style={{ visibility: 'hidden' }}>{query.slice(0, bookHint.at)}</span>
+            <span style={styles.searchGhostText}>{bookHint.text}</span>
+            <span style={{ visibility: 'hidden' }}>{query.slice(bookHint.at)}</span>
+          </div>
+        )}
+        </div>
 
         {/* 3. Previous and next verse navigation */}
         <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
@@ -1857,24 +2201,28 @@ export function BiblePanel() {
               const isHighlighted = !results.length && highlightedVerse === verse.verse;
               const isLive = currentScene?.type === 'bible' && currentScene.name === verse.reference;
               const isPreview = previewScene?.type === 'bible' && previewScene.name === verse.reference;
-              const isSelectedMulti = selectedVerseNumbers.length > 1 && selectedVerseNumbers.includes(verse.verse);
+              /* The verse the operator last clicked. Blue, the way a list marks
+                 its selection in EasyWorship, and it outranks the tally colours
+                 so the click always reads back — a selected verse that is also
+                 live keeps an orange edge rather than losing the live cue. */
+              const isSelected = selectedVerseNumbers.includes(verse.verse);
 
-              const borderStyle = isLive
+              const borderStyle = isSelected
+                ? '1px solid #38bdf8'
+                : isLive
                 ? '2px solid #FF5500'
                 : isPreview
                 ? '1px solid var(--tally-preview)'
-                : isSelectedMulti
-                ? '1px solid #FF5500'
                 : isHighlighted
                 ? '1px solid var(--chrome-control-active)'
                 : '1px solid var(--border-primary)';
 
-              const backgroundStyle = isLive
+              const backgroundStyle = isSelected
+                ? 'rgba(56, 189, 248, 0.15)'
+                : isLive
                 ? 'var(--accent-dim)'
                 : isPreview
                 ? 'rgba(59, 130, 246, 0.08)'
-                : isSelectedMulti
-                ? 'var(--accent-glow)'
                 : isHighlighted
                 ? 'var(--chrome-control-active)'
                 : 'var(--bg-surface)';
@@ -1923,6 +2271,7 @@ export function BiblePanel() {
                     padding: showStrongs ? '8px 12px' : '0 12px',
                     background: backgroundStyle,
                     border: borderStyle,
+                    boxShadow: isSelected && isLive ? 'inset 3px 0 0 #FF5500' : undefined,
                     borderRadius: 6,
                     display: 'flex',
                     alignItems: showStrongs ? 'flex-start' : 'center',
@@ -2461,19 +2810,50 @@ const styles: Record<string, React.CSSProperties> = {
     transition: 'all 0.15s ease',
     fontFamily: 'var(--font-ui)',
   },
-  searchInput: {
+  /* The field carries the chrome, not the input, so the completion can be
+     drawn behind the input's own text without the two fighting over a box. */
+  searchField: {
+    position: 'relative',
+    display: 'flex',
     flex: 1,
-    height: 38,
     minWidth: 140,
-    padding: '0 14px',
+    height: 38,
     background: 'var(--chrome-control)',
     border: '1px solid var(--border-primary)',
     borderRadius: 6,
+    boxSizing: 'border-box',
+    overflow: 'hidden',
+  },
+  searchInput: {
+    flex: 1,
+    width: '100%',
+    minWidth: 0,
+    padding: '0 14px',
+    background: 'transparent',
+    border: 'none',
     color: 'var(--text-primary)',
     fontSize: 13,
     outline: 'none',
     boxSizing: 'border-box',
     fontFamily: 'var(--font-ui)',
+  },
+  /* Mirrors the input's text box exactly, so the completion sits where the
+     browser would have drawn those characters. */
+  searchGhost: {
+    position: 'absolute',
+    inset: 0,
+    display: 'flex',
+    alignItems: 'center',
+    padding: '0 14px',
+    boxSizing: 'border-box',
+    pointerEvents: 'none',
+    whiteSpace: 'pre',
+    overflow: 'hidden',
+    fontSize: 13,
+    fontFamily: 'var(--font-ui)',
+  },
+  searchGhostText: {
+    color: 'var(--bsp-mute)',
   },
   iconNavBtn: {
     display: 'flex',

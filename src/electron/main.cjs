@@ -95,6 +95,7 @@ const os = require('os');
 const http = require('http');
 const { WebSocketServer } = require('ws');
 const bibleService = require('./bible-service.cjs');
+const { clearCache: clearSemanticCache } = require('./semantic-verse-detection.cjs');
 const { createTranscriptionService } = require('./transcription-service.cjs');
 const { createVerseDetectionService } = require('./verse-detection-service.cjs');
 const { createNdiService, DEFAULT_NDI_NAME } = require('./ndi-service.cjs');
@@ -1581,6 +1582,11 @@ app.whenReady().then(async () => {
      build) is refused by setModel and simply leaves the default standing. */
   const savedLocalModel = settingsService.get('sttLocalModel');
   if (savedLocalModel) transcriptionService.setLocalModel(savedLocalModel);
+  /* The engine choice is persisted the same way the model is. Without this a
+     restart put the dispatcher back on the ONNX default while Settings still
+     showed Parakeet, so the console transcribed with the wrong recogniser. */
+  const savedEngine = settingsService.get('sttEngine');
+  if (savedEngine && savedEngine !== 'deepgram') transcriptionService.setActiveEngine(savedEngine);
   obsService = createObsService({
     emit: (event) => {
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('obs:event', event);
@@ -1935,12 +1941,49 @@ app.whenReady().then(async () => {
     }
     return { ok: true, filePaths: res.filePaths };
   });
-  ipcMain.handle('bible:importFile', (_, p) => bibleService.importBibleFile(p || {}));
-  ipcMain.handle('bible:deleteVersion', (_, p) => bibleService.deleteVersion(p?.versionId || p));
+  ipcMain.handle('bible:importFile', (_, p) => { const r = bibleService.importBibleFile(p || {}); clearSemanticCache(); return r; });
+  ipcMain.handle('bible:deleteVersion', (_, p) => { const r = bibleService.deleteVersion(p?.versionId || p); clearSemanticCache(); return r; });
 
   ipcMain.handle('verse:detect', (_, p) => verseDetectionService.detect(p?.text, p?.options || {}));
   ipcMain.handle('verse:warmIndex', (_, p) => verseDetectionService.warmIndex(p?.versionId || 'KJV'));
   ipcMain.handle('verse:indexStatus', () => verseDetectionService.indexStatus());
+  /* The paraphrase path is the expensive one: it embeds a whole version once and
+     then compares vectors per utterance, so it is a separate call the renderer
+     makes only when the quoting detectors came back empty. The Settings toggle is
+     enforced here, on the side that owns the model, rather than trusted to the UI. */
+  ipcMain.handle('verse:searchParaphrased', async (_, p) => {
+    if (settingsService?.get('semanticVerseDetection') === false) {
+      return { ok: true, detections: [], disabled: true };
+    }
+    const text = typeof p?.text === 'string' ? p.text : '';
+    if (text.trim().length < 5) return { ok: true, detections: [] };
+    const versionId = p?.versionId || 'KJV';
+    const versions = bibleService.getData().versions || {};
+    const bibleData = versions[versionId] || versions.KJV || {};
+    try {
+      const hits = await transcriptionService.searchParaphrased(text, bibleData, versionId, {
+        limit: p?.limit || 4,
+      });
+      return {
+        ok: true,
+        detections: hits.map((hit) => ({
+          mode: 'semantic',
+          book: hit.book,
+          chapter: hit.chapter,
+          verseStart: hit.verseStart,
+          verseEnd: hit.verseEnd,
+          displayRef: `${hit.book} ${hit.chapter}:${hit.verseStart}`,
+          text: hit.excerpt,
+          verses: [{ verse: hit.verseStart, text: hit.excerpt }],
+          confidence: hit.confidence,
+          semanticScore: hit.similarity,
+        })),
+      };
+    } catch (err) {
+      // Semantic matching is an extra, never a reason for live detection to fail.
+      return { ok: false, error: err?.message || String(err), detections: [] };
+    }
+  });
 
   ipcMain.handle('lexicon:lookup', (_, query) => lexiconService.lookup(query));
   ipcMain.handle('lexicon:detect', (_, text) => lexiconService.detectWordStudyTerms(text));
@@ -1950,7 +1993,13 @@ app.whenReady().then(async () => {
   ipcMain.handle('ai:warmup', (_, p) => transcriptionService.warmup(p));
   ipcMain.handle('ai:transcribe', (_, p) => transcriptionService.transcribe(p));
   ipcMain.handle('ai:dispose', (_, p) => transcriptionService.dispose(p));
-  ipcMain.handle('ai:setEngine', (_, e) => transcriptionService.setActiveEngine(e));
+  /* Deepgram is not one of the on-device engines: it streams through its own
+     service over `stt:*`. Reporting "unknown engine" for it made picking Deepgram
+     in Settings look like a failure while it was in fact working. */
+  ipcMain.handle('ai:setEngine', (_, e) => {
+    if (e === 'deepgram') return { ok: true, external: 'deepgram', activeEngine: transcriptionService.status().activeEngine };
+    return transcriptionService.setActiveEngine(e);
+  });
   /* Remember the pick. The weights are a download, so a choice that did not
      survive a restart would cost the operator the fetch again. */
   ipcMain.handle('ai:setLocalModel', (_, m) => {
@@ -1958,6 +2007,9 @@ app.whenReady().then(async () => {
     if (result?.ok) settingsService?.set({ sttLocalModel: m });
     return result;
   });
+  /* Fetch the embedding model ahead of the first paraphrase, so the operator's
+     first paraphrased sentence is matched instead of spent downloading. */
+  ipcMain.handle('ai:warmupSemantic', () => transcriptionService.warmupSemantic());
 
   // NDI IPC
   ipcMain.handle('ndi:start', async (_, p) => {
@@ -2489,6 +2541,7 @@ app.whenReady().then(async () => {
     try {
       appStoreService?.clear();
       bibleService?.clearUserBibles();
+      clearSemanticCache();
       settingsService?.reset();
       mediaService?.clearAll();
       stageLayoutsService?.clearAll();

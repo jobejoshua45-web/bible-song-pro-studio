@@ -329,10 +329,12 @@ export function SettingsPanel() {
                     className="input"
                     style={{ width: 190 }}
                     value={settings?.sttEngine || 'deepgram'}
-                    onChange={(e) => saveSettings({ sttEngine: e.target.value as 'local' | 'deepgram' })}
+                    onChange={(e) => saveSettings({ sttEngine: e.target.value as 'local' | 'deepgram' | 'parakeet' | 'voice-studio' })}
                   >
                     <option value="deepgram">Deepgram (cloud, streaming)</option>
                     <option value="local">Local On-Device (offline)</option>
+                    <option value="parakeet">Parakeet (local, NVIDIA)</option>
+                    <option value="voice-studio">Voice Studio (multi-engine)</option>
                   </select>
                 </div>
 

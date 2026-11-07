@@ -37,6 +37,16 @@ function createMlxWhisperCompatService({ app }) {
       return { ok: false, error: 'Model not installed', status: status() };
     }
     const text = String(payload.text || payload.transcript || '').trim();
+    /* Only the passthrough is implemented here. Returning ok with an empty
+       transcript for real audio told the caller the microphone had been heard
+       and had produced nothing, which is indistinguishable from a dead feed. */
+    if (!text) {
+      return {
+        ok: false,
+        error: 'MLX Whisper is not implemented in this build; audio was not transcribed.',
+        status: status(),
+      };
+    }
     return {
       ok: true,
       provider: 'mlx-whisper',

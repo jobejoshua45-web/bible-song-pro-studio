@@ -80,6 +80,7 @@ contextBridge.exposeInMainWorld('BSP', {
 
   verse: {
     detect: (payload) => ipcRenderer.invoke('verse:detect', payload),
+    searchParaphrased: (payload) => ipcRenderer.invoke('verse:searchParaphrased', payload),
   },
 
   /* No `audio` bridge — see main.cjs. Microphones are enumerated in the
@@ -92,10 +93,7 @@ contextBridge.exposeInMainWorld('BSP', {
     dispose: (payload) => ipcRenderer.invoke('ai:dispose', payload),
     setEngine: (engine) => ipcRenderer.invoke('ai:setEngine', engine),
     setLocalModel: (model) => ipcRenderer.invoke('ai:setLocalModel', model),
-    getMlxWhisperStatus: () => ipcRenderer.invoke('ai:getMlxWhisperStatus'),
-    warmupMlxWhisper: (payload) => ipcRenderer.invoke('ai:warmupMlxWhisper', payload),
-    transcribeMlxWhisper: (payload) => ipcRenderer.invoke('ai:transcribeMlxWhisper', payload),
-    disposeMlxWhisper: () => ipcRenderer.invoke('ai:disposeMlxWhisper'),
+    warmupSemantic: () => ipcRenderer.invoke('ai:warmupSemantic'),
   },
 
   ndi: {

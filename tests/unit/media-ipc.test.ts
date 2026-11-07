@@ -39,7 +39,6 @@ describe('Media IPC Handler Registration', () => {
     });
 
     expect(mockIpc.handle).toHaveBeenCalledWith('media:list', expect.any(Function));
-    expect(mockIpc.handle).toHaveBeenCalledWith('ai:status', expect.any(Function));
     expect(mockIpc.handle).toHaveBeenCalledWith('stream:status', expect.any(Function));
     expect(mockIpc.handle).toHaveBeenCalledWith('ndi:status', expect.any(Function));
 

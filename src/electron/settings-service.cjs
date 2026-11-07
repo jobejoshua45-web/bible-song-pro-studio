@@ -7,7 +7,7 @@ const DEFAULTS = {
   deepgramApiKey: '',
   deepgramModel: 'nova-2',
   deepgramLanguage: 'en',
-  sttEngine: 'deepgram', // 'deepgram' | 'local'
+  sttEngine: 'deepgram', // 'deepgram' | 'local' | 'parakeet' | 'voice-studio'
   /* Which on-device recogniser runs. Empty means "whatever the service
      defaults to", so a fresh install follows the default in
      whisper-onnx-service without this file having to name it twice. Stored
@@ -15,6 +15,9 @@ const DEFAULTS = {
      and found it restored to the default on the next launch would have paid
      for it and not got it. */
   sttLocalModel: '',
+  /* Enable semantic verse detection (paraphrased scripture matching) using
+     vector search against the loaded Bible data. */
+  semanticVerseDetection: true,
   /* The language the preacher is speaking. 'auto' lets Whisper detect it per
      utterance; naming one is faster and steadier, which is what a service
      wants. Only a multilingual model can honour anything but English — the

@@ -44,8 +44,8 @@ export function LiveScripturePanel() {
   const [devices, setDevices] = useState<AudioInputDevice[]>([]);
   const [version, setVersion] = useState('follow_bible');
   const [versions, setVersions] = useState<Array<{ id: string; abbreviation: string; name: string }>>([]);
-  const [engine, setEngine] = useState<'local' | 'deepgram'>('local');
-  const engineRef = useRef<'local' | 'deepgram'>('local');
+  const [engine, setEngine] = useState<'local' | 'deepgram' | 'parakeet' | 'voice-studio' | 'mlx'>('local');
+  const engineRef = useRef<'local' | 'deepgram' | 'parakeet' | 'voice-studio' | 'mlx'>('local');
   const [aiStatus, setAiStatus] = useState<LocalModelStatus | null>(null);
   const [sttStatus, setSttStatus] = useState<SttStatus | null>(null);
   const [keyConfigured, setKeyConfigured] = useState(false);
@@ -127,6 +127,9 @@ export function LiveScripturePanel() {
   const lastDetectionTextRef = useRef('');
   const lastProjectedRef = useRef({ key: '', at: 0 });
   const lastSyncedRef = useRef({ key: '', at: 0 });
+  /** Settings → Live AI: "Semantic Verse Detection". Off means no paraphrase pass at all. */
+  const semanticDetectionRef = useRef(true);
+  const semanticWarmedRef = useRef(false);
   /* A ref, not state: this is read inside the transcription loop, which must
      not be re-created — and re-rendering the panel every time Settings is
      touched would restart the recogniser mid-service. */
@@ -142,8 +145,16 @@ export function LiveScripturePanel() {
       if (!settingsData) return;
       const isKeySet = Boolean(settingsData.deepgramApiKeySet);
       setKeyConfigured(isKeySet);
+      /* The embedding model is a download of its own, so it is fetched once, up
+         front, and only while paraphrase matching is switched on. */
+      const semanticOn = settingsData.semanticVerseDetection !== false;
+      semanticDetectionRef.current = semanticOn;
+      if (semanticOn && !semanticWarmedRef.current) {
+        semanticWarmedRef.current = true;
+        void window.BSP?.ai?.warmupSemantic?.();
+      }
       const chosenEngine = settingsData.sttEngine
-        ? (settingsData.sttEngine === 'deepgram' ? 'deepgram' : 'local')
+        ? (settingsData.sttEngine === 'deepgram' ? 'deepgram' : settingsData.sttEngine)
         : (isKeySet ? 'deepgram' : 'local');
       setEngine(chosenEngine);
       engineRef.current = chosenEngine;
@@ -336,7 +347,22 @@ export function LiveScripturePanel() {
       },
     }).catch(() => null);
     if (sequence !== detectSequenceRef.current) return;
-    const detections = result?.detections || [];
+    let detections = result?.detections || [];
+    /* Nothing was cited and nothing was quoted — that is what a paraphrase looks
+       like. Vector search runs as a fallback rather than on every pass because it
+       embeds a whole version the first time, and it stays silent when the operator
+       has switched Semantic Verse Detection off. */
+    if (detections.length === 0 && isFinal && semanticDetectionRef.current) {
+      const paraphrase = await window.BSP?.verse?.searchParaphrased?.({
+        text: cleaned,
+        versionId: detectionVersion,
+        limit: 4,
+      }).catch(() => null);
+      if (sequence !== detectSequenceRef.current) return;
+      if (paraphrase?.ok && Array.isArray(paraphrase.detections)) {
+        detections = paraphrase.detections;
+      }
+    }
     const suggestions: BibleSearchResult[] = detections.map((d) => ({
       reference: d.displayRef,
       text: d.text,
@@ -509,7 +535,7 @@ export function LiveScripturePanel() {
           sermonLanguageRef.current = res.settings.sermonLanguage;
         }
         if (res.settings.sttEngine) {
-          const currentEng = res.settings.sttEngine === 'deepgram' ? 'deepgram' : 'local';
+          const currentEng = res.settings.sttEngine === 'deepgram' ? 'deepgram' : res.settings.sttEngine;
           engineRef.current = currentEng;
           setEngine(currentEng);
         }
@@ -543,8 +569,10 @@ export function LiveScripturePanel() {
       }
       setSttStatus(started.status);
     } else {
-      // Warm the local model up front so the first utterance isn't swallowed by a download
-      window.BSP?.ai?.warmup({ engine: 'onnx' }).catch(() => {});
+      // Warm the chosen model up front so the first utterance isn't swallowed by a
+      // download. It used to warm ONNX whatever was selected, which paid for the
+      // Moonshine weights while Parakeet or Voice Studio was still cold.
+      window.BSP?.ai?.warmup({ engine: currentEngine === 'local' ? 'onnx' : currentEngine }).catch(() => {});
     }
 
     try {
@@ -1415,7 +1443,7 @@ export function LiveScripturePanel() {
                 const currentLocalModel = localModels.find((m) => m.key === activeLocalModelKey) || localModels[0];
                 const isLocalModelDownloaded = Boolean(currentLocalModel?.downloaded);
 
-                const currentDropdownValue = engine === 'deepgram' ? 'deepgram' : `local:${activeLocalModelKey}`;
+                const currentDropdownValue = engine === 'deepgram' ? 'deepgram' : engine === 'parakeet' ? 'parakeet' : engine === 'voice-studio' ? 'voice-studio' : `local:${activeLocalModelKey}`;
 
                 const modelOptions: import('./CustomDropdown').DropdownOption<string>[] = [
                   {
@@ -1424,6 +1452,20 @@ export function LiveScripturePanel() {
                     sublabel: 'Sub-250ms streaming • Cloud API',
                     group: 'Cloud Model',
                     statusDot: keyConfigured ? 'green' : 'amber',
+                  },
+                  {
+                    value: 'parakeet',
+                    label: 'Parakeet TDT 0.6B v3 (ONNX)',
+                    sublabel: '6.32% WER • 25 languages • 100% offline',
+                    group: 'Local On-Device Models (ONNX)',
+                    statusDot: 'green',
+                  },
+                  {
+                    value: 'voice-studio',
+                    label: 'Voice Studio (Multi-Engine)',
+                    sublabel: 'Faster-Whisper, WhisperX, Parakeet, Moonshine & more',
+                    group: 'Local On-Device Models (ONNX)',
+                    statusDot: 'green',
                   },
                   ...localModels.map((m) => ({
                     value: `local:${m.key}`,
@@ -1442,6 +1484,10 @@ export function LiveScripturePanel() {
                         <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2, lineHeight: 1.4 }}>
                           {engine === 'deepgram'
                             ? 'Cloud streaming via Deepgram Nova-2'
+                            : engine === 'parakeet'
+                            ? 'Local Parakeet TDT 0.6B v3 • 100% offline'
+                            : engine === 'voice-studio'
+                            ? 'Voice Studio multi-engine • 100% offline'
                             : `Local on-device (${currentLocalModel?.label || 'Moonshine'}) • 100% offline`}
                         </div>
                       </div>
@@ -1454,6 +1500,18 @@ export function LiveScripturePanel() {
                             setLive({ provider: 'deepgram' });
                             await window.BSP?.settings?.set({ sttEngine: 'deepgram' }).catch(() => {});
                             await window.BSP?.ai?.setEngine?.('deepgram').catch(() => {});
+                          } else if (val === 'parakeet') {
+                            setEngine('parakeet');
+                            engineRef.current = 'parakeet';
+                            setLive({ provider: 'parakeet' });
+                            await window.BSP?.settings?.set({ sttEngine: 'parakeet' }).catch(() => {});
+                            await window.BSP?.ai?.setEngine?.('parakeet').catch(() => {});
+                          } else if (val === 'voice-studio') {
+                            setEngine('voice-studio');
+                            engineRef.current = 'voice-studio';
+                            setLive({ provider: 'voice-studio' });
+                            await window.BSP?.settings?.set({ sttEngine: 'voice-studio' }).catch(() => {});
+                            await window.BSP?.ai?.setEngine?.('voice-studio').catch(() => {});
                           } else if (val.startsWith('local:')) {
                             const modelKey = val.replace('local:', '');
                             setEngine('local');

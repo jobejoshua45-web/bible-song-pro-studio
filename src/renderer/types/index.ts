@@ -487,9 +487,11 @@ export interface AppSettings {
   obsPasswordSet?: boolean;
   deepgramModel: string;
   deepgramLanguage: string;
-  sttEngine: 'deepgram' | 'local';
+  sttEngine: 'deepgram' | 'local' | 'parakeet' | 'voice-studio' | 'mlx';
   /** Which on-device recogniser runs. Empty means the service's own default. */
   sttLocalModel: string;
+  /** Enable semantic verse detection (paraphrased scripture matching). */
+  semanticVerseDetection?: boolean;
   /** The preacher's language. Only a multilingual model can honour it. */
   sermonLanguage: SermonLanguage;
   obsUrl: string;
@@ -510,15 +512,16 @@ export interface AppSettings {
 export type SermonLanguage = 'auto' | 'en' | 'fr' | 'es' | 'pt';
 
 export interface AppSettingsPatch {
-  deepgramApiKey: string;
-  deepgramModel: string;
-  deepgramLanguage: string;
-  sttEngine: 'deepgram' | 'local';
-  sttLocalModel: string;
-  sermonLanguage: SermonLanguage;
-  obsUrl: string;
-  obsPassword: string;
-  obsAutoConnect: boolean;
+  deepgramApiKey?: string;
+  deepgramModel?: string;
+  deepgramLanguage?: string;
+  sttEngine?: 'deepgram' | 'local' | 'parakeet' | 'voice-studio' | 'mlx';
+  sttLocalModel?: string;
+  semanticVerseDetection?: boolean;
+  sermonLanguage?: SermonLanguage;
+  obsUrl?: string;
+  obsPassword?: string;
+  obsAutoConnect?: boolean;
   audioOutputDeviceId?: string;
   audioCueDeviceId?: string;
   audioMasterVolume?: number;
@@ -713,7 +716,7 @@ export interface AudioMeterState {
 export interface LiveScriptureState {
   isActive: boolean;
   detectionMode: 'bible' | 'song';
-  provider: 'webspeech' | 'deepgram' | 'local' | 'mlx-whisper';
+  provider: 'webspeech' | 'deepgram' | 'local' | 'mlx-whisper' | 'mlx' | 'parakeet' | 'voice-studio';
   selectedInputId: string;
   transcript: string;
   bestHit: BibleSearchResult | null;
@@ -731,7 +734,7 @@ export interface LiveScriptureState {
 export interface AIProvider {
   id: string;
   name: string;
-  type: 'webspeech' | 'deepgram' | 'speechmatics' | 'local';
+  type: 'webspeech' | 'deepgram' | 'speechmatics' | 'local' | 'parakeet' | 'voice-studio';
   enabled: boolean;
   apiKey?: string;
 }
@@ -866,6 +869,7 @@ declare global {
 
       verse: {
         detect: (payload: { text: string; options?: { versionId?: string; modes?: string[]; limit?: number; minConfidence?: number; isFinal?: boolean } }) => Promise<VerseDetectionResult>;
+        searchParaphrased: (payload: { text: string; versionId?: string; limit?: number }) => Promise<VerseDetectionResult & { disabled?: boolean; error?: string }>;
       };
       ai: {
         // Unified API
@@ -875,12 +879,9 @@ declare global {
         dispose: (payload?: any) => Promise<any>;
         setEngine: (engine: string) => Promise<any>;
         setLocalModel: (model: string) => Promise<any>;
-        // Backward-compatible aliases
-        getMlxWhisperStatus: () => Promise<any>;
-        warmupMlxWhisper: (payload?: any) => Promise<any>;
-        transcribeMlxWhisper: (payload?: any) => Promise<any>;
-        disposeMlxWhisper: () => Promise<any>;
+        warmupSemantic: () => Promise<any>;
       };
+
       ndi: {
         start: (payload?: { name?: string; fps?: number; width?: number; height?: number }) => Promise<{ ok: boolean; error?: string; source?: string; status?: NdiStatus }>;
         stop: () => Promise<{ ok: boolean; status?: NdiStatus }>;
@@ -1100,6 +1101,44 @@ export interface TranscriptionStatus {
       ready: boolean;
       warmupState: string;
       lastError: string;
+    };
+    parakeet: {
+      ok: boolean;
+      name: string;
+      modelId: string;
+      modelLabel: string;
+      family: string;
+      available: boolean;
+      ready: boolean;
+      modelInstalled: boolean;
+      warmupState: string;
+      downloadProgress: number;
+      cacheDir: string;
+      lastError: string;
+      approxSize: string;
+      backends: string[];
+      multilingual: boolean;
+      supportedLanguages: string[];
+    };
+    'voice-studio': {
+      ok: boolean;
+      name: string;
+      activeEngine: string;
+      available: boolean;
+      transcribeWired: boolean;
+      warmupState: string;
+      lastError: string;
+      voiceStudioPath: string;
+      installUrl: string;
+      engines: Array<{ id: string; label: string }>;
+    };
+    semantic: {
+      ok: boolean;
+      name: string;
+      ready: boolean;
+      warmupState: string;
+      lastError: string;
+      models: string[];
     };
   };
 }

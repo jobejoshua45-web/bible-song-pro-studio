@@ -30,18 +30,6 @@ function registerMediaIpc({
 }) {
   if (!ipc) return;
 
-  // ── AI & Transcription ──
-  ipc.handle('ai:status', () => transcriptionService?.status() || { ok: false });
-  ipc.handle('ai:warmup', (_, p) => transcriptionService?.warmup(p));
-  ipc.handle('ai:transcribe', (_, p) => transcriptionService?.transcribe(p));
-  ipc.handle('ai:dispose', (_, p) => transcriptionService?.dispose(p));
-  ipc.handle('ai:setEngine', (_, e) => transcriptionService?.setActiveEngine(e));
-  ipc.handle('ai:setLocalModel', (_, m) => {
-    const result = transcriptionService?.setLocalModel(m);
-    if (result?.ok) settingsService?.set({ sttLocalModel: m });
-    return result;
-  });
-
   // ── Streaming Speech-to-Text (Deepgram) ──
   ipc.handle('stt:start', (_, p) => deepgramService?.start({
     apiKey: settingsService?.get('deepgramApiKey'),
